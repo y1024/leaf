@@ -6,6 +6,7 @@ use std::{io, pin::Pin};
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use futures::stream::Stream;
+use futures::FutureExt;
 use futures::{
     task::{Context, Poll},
     Future,
@@ -16,18 +17,18 @@ use crate::{proxy::*, session::Session};
 use super::QuicProxyStream;
 
 struct Incoming {
-    inner: quinn::Incoming,
+    endpoint: quinn::Endpoint,
     connectings: Vec<quinn::Connecting>,
-    new_conns: Vec<quinn::NewConnection>,
+    conns: Vec<quinn::Connection>,
     incoming_closed: bool,
 }
 
 impl Incoming {
-    pub fn new(inner: quinn::Incoming) -> Self {
+    pub fn new(endpoint: quinn::Endpoint) -> Self {
         Incoming {
-            inner,
+            endpoint,
             connectings: Vec::new(),
-            new_conns: Vec::new(),
+            conns: Vec::new(),
             incoming_closed: false,
         }
     }
@@ -37,37 +38,44 @@ impl Stream for Incoming {
     type Item = AnyBaseInboundTransport;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // FIXME don't iterate and poll all
-
         if !self.incoming_closed {
-            match Pin::new(&mut self.inner).poll_next(cx) {
-                Poll::Ready(Some(connecting)) => {
-                    self.connectings.push(connecting);
+            let mut connectings = Vec::new();
+            let mut incoming_closed = false;
+            loop {
+                match self.endpoint.accept().boxed().poll_unpin(cx) {
+                    Poll::Ready(Some(connecting)) => {
+                        connectings.push(connecting);
+                    }
+                    Poll::Ready(None) => {
+                        incoming_closed = true;
+                        break;
+                    }
+                    Poll::Pending => {
+                        break;
+                    }
                 }
-                Poll::Ready(None) => {
-                    self.incoming_closed = true;
-                }
-                Poll::Pending => (),
             }
+            self.incoming_closed = incoming_closed;
+            self.connectings.append(&mut connectings);
         }
 
-        let mut new_conns = Vec::new();
+        let mut conns = Vec::new();
         let mut completed = Vec::new();
         for (idx, connecting) in self.connectings.iter_mut().enumerate() {
             match Pin::new(connecting).poll(cx) {
-                Poll::Ready(Ok(new_conn)) => {
-                    new_conns.push(new_conn);
+                Poll::Ready(Ok(conn)) => {
+                    conns.push(conn);
                     completed.push(idx);
                 }
                 Poll::Ready(Err(e)) => {
-                    log::debug!("quic connect failed: {}", e);
+                    log::debug!("QUIC connect failed: {}", e);
                     completed.push(idx);
                 }
                 Poll::Pending => (),
             }
         }
-        if !new_conns.is_empty() {
-            self.new_conns.append(&mut new_conns);
+        if !conns.is_empty() {
+            self.conns.append(&mut conns);
         }
 
         #[allow(unused_must_use)]
@@ -77,14 +85,13 @@ impl Stream for Incoming {
 
         let mut stream: Option<Self::Item> = None;
         let mut completed = Vec::new();
-        for (idx, new_conn) in self.new_conns.iter_mut().enumerate() {
-            match Pin::new(&mut new_conn.bi_streams).poll_next(cx) {
-                Poll::Ready(Some(Ok((send, recv)))) => {
+        for (idx, conn) in self.conns.iter_mut().enumerate() {
+            match conn.accept_bi().boxed().poll_unpin(cx) {
+                Poll::Ready(Ok((send, recv))) => {
                     let mut sess = Session {
-                        source: new_conn.connection.remote_address(),
+                        source: conn.remote_address(),
                         ..Default::default()
                     };
-                    // TODO Check whether the index suitable for this purpose.
                     sess.stream_id = Some(send.id().index());
                     stream.replace(AnyBaseInboundTransport::Stream(
                         Box::new(QuicProxyStream { recv, send }),
@@ -92,25 +99,20 @@ impl Stream for Incoming {
                     ));
                     break;
                 }
-                Poll::Ready(Some(Err(e))) => {
+                Poll::Ready(Err(e)) => {
                     log::debug!("new quic bidirectional stream failed: {}", e);
-                    completed.push(idx);
-                }
-                Poll::Ready(None) => {
-                    // FIXME what?
-                    log::warn!("quic bidirectional stream exhausted");
                     completed.push(idx);
                 }
                 Poll::Pending => (),
             }
         }
         for idx in completed.iter().rev() {
-            self.new_conns.remove(*idx);
+            self.conns.remove(*idx);
         }
 
         if let Some(stream) = stream.take() {
             Poll::Ready(Some(stream))
-        } else if self.incoming_closed && self.connectings.is_empty() && self.new_conns.is_empty() {
+        } else if self.incoming_closed && self.connectings.is_empty() && self.conns.is_empty() {
             Poll::Ready(None)
         } else {
             Poll::Pending
@@ -182,15 +184,14 @@ impl Handler {
         }
 
         let mut transport_config = quinn::TransportConfig::default();
-        transport_config
-            .max_concurrent_uni_streams(quinn::VarInt::from_u32(0))
-            .max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(
-                300_000,
-            )))); // ms
+        transport_config.max_concurrent_bidi_streams(quinn::VarInt::from_u32(64));
+        transport_config.max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(
+            300_000,
+        ))));
         transport_config
             .congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
         let mut server_config = quinn::ServerConfig::with_crypto(Arc::new(crypto));
-        server_config.transport = Arc::new(transport_config);
+        server_config.transport_config(Arc::new(transport_config));
 
         Ok(Self { server_config })
     }
@@ -199,14 +200,15 @@ impl Handler {
 #[async_trait]
 impl InboundDatagramHandler for Handler {
     async fn handle<'a>(&'a self, socket: AnyInboundDatagram) -> io::Result<AnyInboundTransport> {
-        let (_, incoming) = quinn::Endpoint::new(
+        let endpoint = quinn::Endpoint::new(
             quinn::EndpointConfig::default(),
             Some(self.server_config.clone()),
             socket.into_std()?,
+            quinn::TokioRuntime,
         )
         .map_err(quic_err)?;
         Ok(InboundTransport::Incoming(Box::new(Incoming::new(
-            incoming,
+            endpoint,
         ))))
     }
 }

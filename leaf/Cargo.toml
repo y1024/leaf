@@ -214,7 +214,7 @@ lru_time_cache = { version = "0.11", optional = true }
 tokio-util = { version = "0.6", default-features = false, features = ["io"], optional = true }
 
 # QUIC
-quinn = { version = "0.8", default-features = false, features = ["tls-rustls"], optional = true }
+quinn = { version = "0.9", default-features = false, features = ["tls-rustls", "runtime-tokio"], optional = true }
 rustls = { version = "0.20", optional = true }
 
 # API
