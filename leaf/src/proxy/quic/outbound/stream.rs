@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use futures::FutureExt;
 use futures::TryFutureExt;
 use rustls::OwnedTrustAnchor;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 use crate::{app::SyncDnsClient, proxy::*, session::Session};
 
@@ -22,18 +22,13 @@ where
     io::Error::new(io::ErrorKind::Other, error)
 }
 
-struct Connection {
-    pub conn: quinn::Connection,
-    pub completed: bool,
-}
-
 struct Manager {
     address: String,
     port: u16,
     server_name: Option<String>,
     dns_client: SyncDnsClient,
     client_config: quinn::ClientConfig,
-    connections: Mutex<Vec<Connection>>,
+    connections: RwLock<Vec<quinn::Connection>>,
 }
 
 impl Manager {
@@ -104,7 +99,7 @@ impl Manager {
             server_name,
             dns_client,
             client_config,
-            connections: Mutex::new(Vec::new()),
+            connections: RwLock::new(Vec::new()),
         }
     }
 }
@@ -113,19 +108,18 @@ impl Manager {
     pub async fn new_stream(
         &self,
     ) -> Result<QuicProxyStream<quinn::RecvStream, quinn::SendStream>> {
-        self.connections.lock().await.retain(|c| !c.completed);
-
-        for conn in self.connections.lock().await.iter_mut() {
-            match conn.conn.open_bi().await {
+        let start = std::time::Instant::now();
+        for conn in self.connections.read().await.iter() {
+            match conn.open_bi().await {
                 Ok((send, recv)) => {
                     log::trace!(
-                        "opened quic stream on connection with rtt {} ms",
-                        conn.conn.rtt().as_millis(),
+                        "opened quic stream on connection (rtt {} ms) in {} ms",
+                        conn.rtt().as_millis(),
+                        start.elapsed().as_millis(),
                     );
                     return Ok(QuicProxyStream { recv, send });
                 }
                 Err(e) => {
-                    conn.completed = true;
                     log::debug!("open quic bidirectional stream failed: {}", e);
                 }
             }
@@ -142,27 +136,16 @@ impl Manager {
             quinn::TokioRuntime,
         )?;
         endpoint.set_default_client_config(self.client_config.clone());
-
         let ips = self.dns_client.read().await.lookup(&self.address).await?;
         if ips.is_empty() {
             return Err(anyhow!("could not resolve to any address",));
         }
         let connect_addr = SocketAddr::new(ips[0], self.port);
-
-        let server_name = if let Some(name) = self.server_name.as_ref() {
-            name
-        } else {
-            &self.address
-        };
-
+        let server_name = self.server_name.as_ref().unwrap_or(&self.address);
         let conn = endpoint.connect(connect_addr, server_name)?.await?;
-
         let (send, recv) = conn.open_bi().await?;
 
-        self.connections.lock().await.push(Connection {
-            conn,
-            completed: false,
-        });
+        self.connections.write().await.push(conn);
 
         Ok(QuicProxyStream { recv, send })
     }
