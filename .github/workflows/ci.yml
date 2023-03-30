@@ -20,7 +20,7 @@ jobs:
       - name: install rust toolchain
         uses: hecrj/setup-rust-action@v1
         with:
-          rust-version: nightly
+          rust-version: stable
 
       - name: test leaf
         run: cargo test -p leaf
@@ -32,12 +32,12 @@ jobs:
       matrix:
         target:
           - mips-unknown-linux-musl
-            #          - mipsel-unknown-linux-musl
+          - mipsel-unknown-linux-musl
           - x86_64-unknown-linux-musl
-            #          - i686-unknown-linux-musl
+          - i686-unknown-linux-musl
           - aarch64-unknown-linux-musl
-            #          - arm-unknown-linux-musleabi
-            #          - armv7-unknown-linux-musleabihf
+          - arm-unknown-linux-musleabi
+          - armv7-unknown-linux-musleabihf
           - x86_64-pc-windows-gnu
     steps:
       - name: checkout
@@ -48,7 +48,7 @@ jobs:
       - name: install rust toolchain
         uses: hecrj/setup-rust-action@v1
         with:
-          rust-version: nightly
+          rust-version: stable
 
       - name: install deps
         run: |
@@ -109,7 +109,7 @@ jobs:
       - name: install rust toolchain
         uses: hecrj/setup-rust-action@v1
         with:
-          rust-version: nightly
+          rust-version: stable
 
       - name: install llvm
         if: ${{ matrix.os == 'macos-latest' }}
@@ -132,38 +132,34 @@ jobs:
           name: leaf-${{ matrix.target }}
           path: leaf-${{ matrix.target }}
 
-          #  build-lib-ios:
-          #    runs-on: macos-latest
-          #    steps:
-          #      - name: checkout
-          #        uses: actions/checkout@v2
-          #        with:
-          #          submodules: true
-          #
-          #      - name: install rust
-          #        uses: hecrj/setup-rust-action@v1
-          #        with:
-          #          rust-version: nightly
-          #
-          #      - name: install toolchain
-          #        run: |
-          #          rustup target add aarch64-apple-ios
-          #          cargo install cargo-lipo
-          #          cargo install cbindgen
-          #          brew update && brew install llvm unzip protobuf
-          #
-          #      - name: build
-          #        run: |
-          #          make ios
-          #
-          #      - name: zip artifacts
-          #        run: |
-          #          mv target/universal/release/libleaf.a .
-          #          mv target/universal/release/leaf.h .
-          #          zip libleaf-ios.zip leaf.h libleaf.a
-          #
-          #      - name: upload assets
-          #        uses: actions/upload-artifact@v2
-          #        with:
-          #          name: libleaf-ios.zip
-          #          path: libleaf-ios.zip
+  build-apple:
+    runs-on: macos-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v2
+        with:
+          submodules: true
+
+      - name: install rust
+        uses: hecrj/setup-rust-action@v1
+        with:
+          rust-version: stable
+
+      - name: install toolchain
+        run: |
+          cargo install cbindgen
+          brew update && brew install llvm unzip protobuf
+
+      - name: build
+        run: |
+          ./scripts/build_apple_xcframework.sh
+
+      - name: zip artifacts
+        run: |
+          zip leaf.xcframework.zip target/apple/release/leaf.xcframework
+
+      - name: upload assets
+        uses: actions/upload-artifact@v2
+        with:
+          name: leaf.xcframework.zip
+          path: leaf.xcframework.zip
