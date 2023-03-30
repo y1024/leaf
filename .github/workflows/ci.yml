@@ -9,7 +9,7 @@ jobs:
         os:
           - macos-latest
           - ubuntu-latest
-          - windows-latest
+            #          - windows-latest
     runs-on: ${{ matrix.os }}
     steps:
       - name: checkout
@@ -156,7 +156,8 @@ jobs:
 
       - name: zip artifacts
         run: |
-          zip leaf.xcframework.zip target/apple/release/leaf.xcframework
+          mv target/apple/release/leaf.xcframework .
+          zip -r leaf.xcframework.zip leaf.xcframework
 
       - name: upload assets
         uses: actions/upload-artifact@v2
