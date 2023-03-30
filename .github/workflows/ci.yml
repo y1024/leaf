@@ -195,6 +195,8 @@ jobs:
 
       - name: build
         run: |
+          export ANDROID_HOME=/tmp/Android/sdk
+          export NDK_HOME=/tmp/Android/sdk/ndk/25.2.9519653
           ./scripts/build_android.sh
 
       - name: zip artifacts
