@@ -6,15 +6,15 @@ name=leaf
 package=leaf-ffi
 manifest=android/Cargo.toml
 mode=--release
-target=
+targets=
 
 if [ ! -z "$2" ]; then
-	target="$2"
+	targets="$2"
 else
-	target="aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android"
+	targets="aarch64-linux-android armv7-linux-androideabi x86_64-linux-android i686-linux-android"
 fi
 
-for target in $target; do
+for target in $targets; do
 	rustup target add $target
 done
 
@@ -33,7 +33,7 @@ api=21
 
 # See also: https://github.com/briansmith/ring/blob/main/mk/cargo.sh
 
-for target in $target; do
+for target in $targets; do
 	case $target in
 		'armv7-linux-androideabi')
 			export CC_armv7_linux_androideabi="$android_tools/armv7a-linux-androideabi${api}-clang"
@@ -65,7 +65,7 @@ done
 android_libs=$BASE/../target/leaf-android-libs
 
 mkdir -p $android_libs
-for target in $target; do
+for target in $targets; do
 	mv $BASE/../target/$target/release/libleaf.so $android_libs/libleaf-$target.so
 done
 cbindgen \
