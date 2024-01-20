@@ -37,6 +37,7 @@ jobs:
       - name: install cross
         run: |
           cargo install cross
+          rustup target add ${{ matrix.target }}
 
       - name: build
         run: |
