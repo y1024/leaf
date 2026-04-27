@@ -177,6 +177,22 @@ lazy_static! {
         get_env_var_or("QUIC_ACCEPT_CHANNEL_SIZE", 1024)
     };
 
+    pub static ref INCOMING_ACCEPT_CONCURRENCY: usize = {
+        get_env_var_or("INCOMING_ACCEPT_CONCURRENCY", 256)
+    };
+
+    pub static ref QUIC_MAX_CONCURRENT_BIDI_STREAMS: u32 = {
+        get_env_var_or("QUIC_MAX_CONCURRENT_BIDI_STREAMS", 256)
+    };
+
+    pub static ref QUIC_MAX_IDLE_TIMEOUT_MS: u32 = {
+        get_env_var_or("QUIC_MAX_IDLE_TIMEOUT_MS", 120_000)
+    };
+
+    pub static ref QUIC_ACCEPT_QUEUE_TIMEOUT: u64 = {
+        get_env_var_or("QUIC_ACCEPT_QUEUE_TIMEOUT", 5)
+    };
+
     pub static ref AMUX_ACCEPT_CHANNEL_SIZE: usize = {
         get_env_var_or("AMUX_ACCEPT_CHANNEL_SIZE", 1024)
     };

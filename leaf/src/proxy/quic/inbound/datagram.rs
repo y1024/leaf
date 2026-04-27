@@ -11,6 +11,7 @@ use quinn::{RecvStream, SendStream};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls_pemfile::{certs, pkcs8_private_keys, rsa_private_keys};
 use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::time::{timeout, Duration};
 use tracing::{debug, trace, warn};
 
 use crate::{proxy::*, session::Session, session::StreamId};
@@ -119,10 +120,12 @@ impl Handler {
             quinn::crypto::rustls::QuicServerConfig::try_from(crypto).unwrap(),
         ));
         let mut transport_config = quinn::TransportConfig::default();
-        transport_config.max_concurrent_bidi_streams(quinn::VarInt::from_u32(64));
-        transport_config.max_idle_timeout(Some(quinn::IdleTimeout::from(quinn::VarInt::from_u32(
-            300_000,
-        ))));
+        transport_config.max_concurrent_bidi_streams(quinn::VarInt::from_u32(
+            *crate::option::QUIC_MAX_CONCURRENT_BIDI_STREAMS,
+        ));
+        transport_config.max_idle_timeout(Some(quinn::IdleTimeout::from(
+            quinn::VarInt::from_u32(*crate::option::QUIC_MAX_IDLE_TIMEOUT_MS),
+        )));
         transport_config
             .congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
         server_config.transport_config(Arc::new(transport_config));
@@ -133,12 +136,13 @@ impl Handler {
 
 async fn handle_conn(
     stream_tx: Sender<(SocketAddr, (SendStream, RecvStream))>,
-    remote_addr: &SocketAddr,
+    remote_addr: SocketAddr,
     conn: quinn::Connecting,
 ) -> Result<()> {
     let (conn, _) = conn
         .into_0rtt()
         .map_err(|_| anyhow!("convert 0rtt failed"))?;
+    let send_timeout = Duration::from_secs(*crate::option::QUIC_ACCEPT_QUEUE_TIMEOUT);
     trace!("quic handling connection from {}", remote_addr);
     loop {
         let s = conn.accept_bi().await?;
@@ -146,7 +150,16 @@ async fn handle_conn(
         if stream_tx.capacity() == 0 {
             warn!("quic accept channel full");
         }
-        let _ = stream_tx.send((*remote_addr, s)).await;
+        match timeout(send_timeout, stream_tx.send((remote_addr, s))).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => return Ok(()),
+            Err(_) => {
+                return Err(anyhow!(
+                    "quic accept queue remained full for {:?}, dropping connection",
+                    send_timeout
+                ));
+            }
+        }
     }
 }
 
@@ -169,8 +182,7 @@ impl InboundDatagramHandler for Handler {
                     let remote_addr = incoming.remote_address();
                     match incoming.accept() {
                         Ok(connecting) => {
-                            if let Err(e) = handle_conn(stream_tx_c, &remote_addr, connecting).await
-                            {
+                            if let Err(e) = handle_conn(stream_tx_c, remote_addr, connecting).await {
                                 debug!(
                                     "handle quic connection from {} failed: {}",
                                     &remote_addr, e
